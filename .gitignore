@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.rom_rating_cache.json
+*.tmp
