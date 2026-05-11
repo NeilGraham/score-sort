@@ -63,6 +63,14 @@ class RatingSorterTests(unittest.TestCase):
         self.assertIn("eternal-darkness-sanitys-requiem", sorter.slug_candidates("Eternal Darkness - Sanity's Requiem"))
         self.assertIn("the-simpsons-hit-run", sorter.slug_candidates("Simpsons, The - Hit & Run"))
         self.assertIn("lego-star-wars", sorter.slug_candidates("LEGO Star Wars - The Video Game"))
+        self.assertIn(
+            "spongebob-squarepants-battle-for-bikini-bottom",
+            sorter.slug_candidates("Nickelodeon SpongeBob SquarePants - Battle for Bikini Bottom"),
+        )
+        self.assertIn(
+            "ultimate-fighting-championship-throwdown",
+            sorter.slug_candidates("UFC - Throwdown"),
+        )
         self.assertIn("syberia", sorter.slug_candidates("B Sokal Syberia"))
         self.assertIn(
             "wwe-smackdown-vs-raw-2009",

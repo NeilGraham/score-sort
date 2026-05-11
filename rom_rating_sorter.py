@@ -545,6 +545,14 @@ def title_variants(title: str) -> list[str]:
     if year_suffix != title:
         variants.append(year_suffix)
 
+    branded_prefix = re.sub(r"^Nickelodeon\s+", "", title, flags=re.I)
+    if branded_prefix != title:
+        variants.append(branded_prefix)
+
+    ufc_expanded = re.sub(r"^UFC\b", "Ultimate Fighting Championship", title, flags=re.I)
+    if ufc_expanded != title:
+        variants.append(ufc_expanded)
+
     spaced_initialism = re.sub(
         r"\b((?:[A-Z]\s+){1,5}[A-Z])\b",
         lambda match: match.group(1).replace(" ", ""),
