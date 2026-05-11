@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Sort media directory items by critic scores from Metacritic and OpenCritic."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["rich>=13.7"]
 
 [project.scripts]
 score-sort = "rom_rating_sorter:main"
