@@ -52,6 +52,24 @@ DEFAULT_EXTENSIONS = (
     ".cue,.bin,.gdi,.cdi,.rvz,.wbfs,.wua,.xci,.nsp,.zip,.7z,.rar,"
     ".mkv,.mp4,.m4v,.avi,.mov,.wmv,.webm"
 )
+COMPOUND_TITLE_SUFFIXES = (
+    ".nkit.iso",
+    ".nkit.gcz",
+    ".nkit.rvz",
+    ".xiso.iso",
+    ".ciso.iso",
+)
+LEGACY_FILENAME_KEY_FORMAT_SUFFIXES = ("-nkit", "-xiso", "-ciso")
+KNOWN_TITLE_SUFFIXES = tuple(
+    sorted(
+        {
+            *COMPOUND_TITLE_SUFFIXES,
+            *(ext.strip().lower() for ext in DEFAULT_EXTENSIONS.split(",") if ext.strip()),
+        },
+        key=len,
+        reverse=True,
+    )
+)
 CACHE_WRITE_LOCK = threading.Lock()
 DEFAULT_PLATFORM_CACHE_DAYS = 30
 VERBOSE = False
@@ -62,8 +80,11 @@ MATCH_REVIEW_CANDIDATES_ATTR = "_match_review_candidates"
 AUTO_MATCH_THRESHOLD = 0.93
 REVIEW_MATCH_THRESHOLD = 0.80
 MAX_REVIEW_CANDIDATES = 3
-FILENAME_MATCH_LOOKUP_VERSION = 4
+FILENAME_MATCH_LOOKUP_VERSION = 6
+METACRITIC_SEARCH_SLUG_LIMIT = 10
 MIN_METACRITIC_USER_RATINGS_FOR_COMBINED = 4
+METACRITIC_PRODUCT_PAGE_ATTEMPT_STATUSES = {"ok", "not found"}
+METACRITIC_CACHEABLE_MISS_STATUSES = {"not found"}
 PROGRESS_CONSOLE = Console(stderr=True)
 DEBUG_WRITE_LOCK = threading.Lock()
 
@@ -464,8 +485,25 @@ def fetch_text(url: str, timeout: float) -> str:
         return response.read().decode(charset, errors="replace")
 
 
+def strip_known_title_suffixes(name: str) -> str:
+    stripped = name
+    while True:
+        lower_name = stripped.lower()
+        suffix = next(
+            (
+                suffix
+                for suffix in KNOWN_TITLE_SUFFIXES
+                if lower_name.endswith(suffix) and len(stripped) > len(suffix)
+            ),
+            None,
+        )
+        if suffix is None:
+            return stripped
+        stripped = stripped[: -len(suffix)]
+
+
 def clean_title(path: Path) -> str:
-    name = path.stem if path.suffix else path.name
+    name = strip_known_title_suffixes(path.name)
     name = re.sub(r"\[[^\]]*\]", " ", name)
     name = re.sub(r"\([^)]*\)", " ", name)
     name = re.sub(r"\bS\d{1,2}E\d{1,2}\b.*$", " ", name, flags=re.I)
@@ -484,6 +522,7 @@ def clean_title(path: Path) -> str:
 
 def slugify(title: str) -> str:
     title = title.lower()
+    title = re.sub(r"['’`]", "", title)
     title = title.replace("&", " and ")
     title = re.sub(r"[^a-z0-9]+", "-", title)
     return title.strip("-")
@@ -494,6 +533,17 @@ def title_variants(title: str) -> list[str]:
     article_match = re.match(r"(.+),\s+(the|a|an)$", title, re.I)
     if article_match:
         variants.append(f"{article_match.group(2)} {article_match.group(1)}")
+    article_with_subtitle_match = re.match(r"(.+),\s+(the|a|an)(\s*[-:]\s+.+)$", title, re.I)
+    if article_with_subtitle_match:
+        variants.append(
+            f"{article_with_subtitle_match.group(2)} "
+            f"{article_with_subtitle_match.group(1)}"
+            f"{article_with_subtitle_match.group(3)}"
+        )
+
+    year_suffix = re.sub(r"\s+\(\d{4}\)$", "", title)
+    if year_suffix != title:
+        variants.append(year_suffix)
 
     spaced_initialism = re.sub(
         r"\b((?:[A-Z]\s+){1,5}[A-Z])\b",
@@ -518,6 +568,10 @@ def title_variants(title: str) -> list[str]:
     if director_cut != title:
         variants.append(director_cut)
 
+    video_game_suffix = re.sub(r"\s+-\s+The Video Game$", "", title, flags=re.I)
+    if video_game_suffix != title:
+        variants.append(video_game_suffix)
+
     featuring_suffix = re.sub(
         r"\s+Featuring\s+(?:[A-Z0-9&]{2,}(?:\s+[A-Z0-9&]{2,}){0,2})$",
         "",
@@ -541,10 +595,14 @@ def slug_candidates(title: str) -> list[str]:
     seen: set[str] = set()
     candidates = []
     for variant in title_variants(title):
-        slug = slugify(variant)
-        if slug and slug not in seen:
-            seen.add(slug)
-            candidates.append(slug)
+        slug_variants = [variant]
+        if "&" in variant:
+            slug_variants.append(variant.replace("&", " "))
+        for slug_variant in slug_variants:
+            slug = slugify(slug_variant)
+            if slug and slug not in seen:
+                seen.add(slug)
+                candidates.append(slug)
     return candidates
 
 
@@ -555,7 +613,7 @@ VERSION_TOKEN_PATTERN = re.compile(r"^(?:\d+|i|ii|iii|iv|v|vi|vii|viii|ix|x)$", 
 def normalize_match_text(value: str) -> str:
     value = html.unescape(value).lower()
     value = value.replace("&", " and ")
-    value = re.sub(r"['’]", "", value)
+    value = re.sub(r"['’`]", "", value)
     value = re.sub(r"[^a-z0-9]+", " ", value)
     tokens = [token for token in value.split() if token not in MATCH_STOPWORDS]
     return " ".join(tokens)
@@ -1091,6 +1149,50 @@ def parse_metacritic_rating_values(
     return score, review_count, user_score, user_count
 
 
+def absolute_metacritic_url(url: str) -> str:
+    if url.startswith("http://") or url.startswith("https://"):
+        return url
+    return urllib.parse.urljoin(METACRITIC_BASE_URL, url)
+
+
+def parse_metacritic_platform_product_card(
+    page: str,
+    platform: str | None,
+) -> tuple[int | None, str | None, int | None]:
+    if not platform:
+        return None, None, None
+    expected_platform = metacritic_platform_slug_from_label(platform) or platform
+    cards = re.finditer(
+        r"<a\b(?=[^>]*\bdata-testid=[\"']product-score-card[\"'])"
+        r"(?P<attrs>[^>]*)>(?P<body>.*?)</a>",
+        page,
+        re.I | re.S,
+    )
+    for card in cards:
+        attrs = card.group("attrs")
+        body = card.group("body")
+        href_match = re.search(r"\bhref=[\"'](?P<href>[^\"']+)[\"']", attrs, re.I)
+        if href_match is None or "/critic-reviews/" not in html.unescape(href_match.group("href")):
+            continue
+        href = html.unescape(href_match.group("href"))
+        parsed_href = urllib.parse.urlsplit(href)
+        query_platform = urllib.parse.parse_qs(parsed_href.query).get("platform", [None])[0]
+        card_platform = metacritic_platform_slug_from_label(query_platform or "")
+        if card_platform is None:
+            card_platforms = parse_metacritic_page_platforms(body)
+            card_platform = next(iter(card_platforms), None) if len(card_platforms) == 1 else None
+        if card_platform != expected_platform:
+            continue
+
+        score_match = re.search(r"\b(?:title|aria-label)=[\"']Metascore\s+(\d{1,3})\s+out of 100[\"']", body, re.I)
+        count_match = re.search(r"Based on\s+([\d,]+)\s+Critic Reviews?", clean_html_text(body), re.I)
+        score = int(score_match.group(1)) if score_match else None
+        review_count = normalize_count(count_match.group(1)) if count_match else None
+        score, review_count = sanitize_metacritic_score(score, review_count)
+        return score, absolute_metacritic_url(href) if score is not None else None, review_count
+    return None, None, None
+
+
 def parse_metacritic_nuxt_count(
     page: str,
     summary_key: str,
@@ -1164,7 +1266,7 @@ def parse_metacritic_visible_user_score(page: str) -> float | None:
     return None
 
 
-def parse_metacritic_search_slugs(page: str, query: str, limit: int = 5) -> list[str]:
+def parse_metacritic_search_slugs(page: str, query: str, limit: int = METACRITIC_SEARCH_SLUG_LIMIT) -> list[str]:
     match = re.search(r'<script[^>]*id="__NUXT_DATA__"[^>]*>(.*?)</script>', page, re.S)
     if not match:
         return []
@@ -1578,6 +1680,12 @@ def get_metacritic_slug(
         if DEBUG:
             timings.append(("mc product parse", time.perf_counter() - parse_start))
         if not page_matches_platform:
+            card_score, card_score_url, card_review_count = parse_metacritic_platform_product_card(page, platform)
+            if card_score is not None:
+                score = card_score
+                score_url = card_score_url
+            if card_review_count is not None:
+                review_count = card_review_count
             log(f"  Metacritic: product page is ambiguous for {platform}, checking platform review pages")
             review_urls = metacritic_review_urls(slug, platform)
         elif kind == "game" and platform:
@@ -1749,6 +1857,8 @@ def preserve_platform_user_scores(
         if previous is not None:
             if rating.review_count is None:
                 rating.review_count = previous.review_count
+            if previous.product_page_parsed:
+                rating.product_page_parsed = True
             if previous.user_score is not None:
                 rating.user_score = previous.user_score
                 rating.user_score_url = previous.user_score_url
@@ -1811,7 +1921,7 @@ def load_filename_matches(path: Path, platform: str) -> dict[str, FilenameMatch]
         return {}
     platform_created_at = platform_data.get("created_at") or platform_data.get("updated_at")
     platform_created = float(platform_created_at) if isinstance(platform_created_at, (int, float)) else None
-    matches = {}
+    loaded_matches: list[tuple[str, FilenameMatch]] = []
     for key, value in raw_matches.items():
         if isinstance(value, dict):
             try:
@@ -1826,10 +1936,20 @@ def load_filename_matches(path: Path, platform: str) -> dict[str, FilenameMatch]
                 continue
             if (
                 filename_match.lookup_version < FILENAME_MATCH_LOOKUP_VERSION
-                and filename_match.match_type in {"lookup", "miss"}
+                and filename_match.match_type == "miss"
             ):
                 continue
-            matches[str(key)] = filename_match
+            loaded_matches.append((str(key), filename_match))
+
+    matches: dict[str, FilenameMatch] = {}
+    for key, filename_match in loaded_matches:
+        if filename_match_prefer(filename_match, matches.get(key)):
+            matches[key] = filename_match
+
+    for key, filename_match in loaded_matches:
+        for alias_key in legacy_filename_match_alias_keys(key):
+            if filename_match_prefer(filename_match, matches.get(alias_key)):
+                matches[alias_key] = filename_match
     return matches
 
 
@@ -2093,6 +2213,28 @@ def filename_match_has_rating_data(match: FilenameMatch) -> bool:
     return match.metacritic is not None or match.user_score is not None
 
 
+def filename_match_prefer(candidate: FilenameMatch, existing: FilenameMatch | None) -> bool:
+    if existing is None:
+        return True
+    if candidate.status == "ok" and existing.status != "ok":
+        return True
+    if filename_match_has_rating_data(candidate) and not filename_match_has_rating_data(existing):
+        return True
+    return False
+
+
+def legacy_filename_match_alias_keys(key: str) -> list[str]:
+    aliases = []
+    stripped = key
+    while True:
+        suffix = next((suffix for suffix in LEGACY_FILENAME_KEY_FORMAT_SUFFIXES if stripped.endswith(suffix)), None)
+        if suffix is None:
+            return aliases
+        stripped = stripped[: -len(suffix)]
+        if stripped:
+            aliases.append(stripped)
+
+
 def fill_rating_from_filename_match(rating: Rating, match: FilenameMatch, overwrite: bool = False) -> None:
     if overwrite or rating.metacritic is None:
         rating.metacritic = match.metacritic
@@ -2134,10 +2276,11 @@ def fill_rating_from_metacritic_result(
         rating.metacritic_url = metacritic_url
     if review_count is not None:
         rating.metacritic_review_count = review_count
-    rating.metacritic_user = user_score
-    rating.metacritic_user_url = user_score_url if user_score is not None else None
-    rating.metacritic_user_count = user_count if user_score is not None else None
-    if status == "ok" and mark_product_page_parsed:
+    if status == "ok" or user_score is not None or user_score_url is not None or user_count is not None:
+        rating.metacritic_user = user_score
+        rating.metacritic_user_url = user_score_url if user_score is not None else None
+        rating.metacritic_user_count = user_count if user_score is not None else None
+    if mark_product_page_parsed and status in METACRITIC_PRODUCT_PAGE_ATTEMPT_STATUSES:
         rating.metacritic_product_page_parsed = True
     return str(status)
 
@@ -2468,8 +2611,8 @@ def update_filename_matches_from_ratings(
     changed = False
     for rating in ratings:
         key = filename_match_key(rating.title)
-        slug = platform_rating_slug_from_url(rating.metacritic_url)
-        if rating.status == "ok" and slug:
+        slug = platform_rating_slug_from_url(rating.metacritic_url) or platform_rating_slug_from_url(rating.metacritic_user_url)
+        if slug and (rating.status == "ok" or rating.metacritic is not None or rating.metacritic_user is not None):
             old_match = matches.get(key)
             match_type = "matched" if slug in platform_slugs else "lookup"
             rejected_slugs = old_match.rejected_slugs if old_match is not None else []
@@ -2489,7 +2632,7 @@ def update_filename_matches_from_ratings(
                 product_page_parsed=rating.metacritic_product_page_parsed,
                 rejected_slugs=[rejected_slug for rejected_slug in rejected_slugs if rejected_slug != slug],
             )
-        elif rating.status == "not found":
+        elif rating.status in METACRITIC_CACHEABLE_MISS_STATUSES:
             old_match = matches.get(key)
             status = "reviewed" if old_match is not None and old_match.status == "reviewed" and old_match.rejected_slugs else "not found"
             match_type = old_match.match_type if status == "reviewed" and old_match is not None else "miss"

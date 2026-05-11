@@ -51,9 +51,18 @@ class RatingSorterTests(unittest.TestCase):
 
         self.assertEqual(title, "Chrono Trigger")
 
+    def test_clean_title_removes_compound_container_suffixes(self) -> None:
+        self.assertEqual(sorter.clean_title(Path("Metroid Prime.nkit.iso")), "Metroid Prime")
+        self.assertEqual(sorter.clean_title(Path("Halo 2.xiso.iso")), "Halo 2")
+        self.assertEqual(sorter.clean_title(Path("Resident Evil.nkit.iso.zip")), "Resident Evil")
+        self.assertEqual(sorter.clean_title(Path("Mr. Driller.nds")), "Mr Driller")
+
     def test_slug_candidates_include_rom_catalog_variants(self) -> None:
         self.assertIn("the-bigs-2", sorter.slug_candidates("Bigs 2, The"))
         self.assertIn("cop-the-recruit", sorter.slug_candidates("C O P - The Recruit"))
+        self.assertIn("eternal-darkness-sanitys-requiem", sorter.slug_candidates("Eternal Darkness - Sanity's Requiem"))
+        self.assertIn("the-simpsons-hit-run", sorter.slug_candidates("Simpsons, The - Hit & Run"))
+        self.assertIn("lego-star-wars", sorter.slug_candidates("LEGO Star Wars - The Video Game"))
         self.assertIn("syberia", sorter.slug_candidates("B Sokal Syberia"))
         self.assertIn(
             "wwe-smackdown-vs-raw-2009",
@@ -80,6 +89,22 @@ class RatingSorterTests(unittest.TestCase):
 
         self.assertIsNotNone(match)
         self.assertEqual(match[0].slug, "the-bigs-2")
+        self.assertEqual(match[1], "exact-title")
+
+    def test_platform_match_auto_accepts_catalog_year_suffix_variant(self) -> None:
+        ratings = [
+            sorter.PlatformRating(
+                title="Paper Mario: The Thousand-Year Door (2004)",
+                slug="paper-mario-the-thousand-year-door-2004",
+                metacritic=87,
+                metacritic_url="https://www.metacritic.com/game/paper-mario-the-thousand-year-door-2004/",
+            )
+        ]
+
+        match = sorter.platform_rating_match("Paper Mario - The Thousand-Year Door", ratings)
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match[0].slug, "paper-mario-the-thousand-year-door-2004")
         self.assertEqual(match[1], "exact-title")
 
     def test_platform_match_does_not_auto_accept_version_conflict(self) -> None:
@@ -619,6 +644,33 @@ class RatingSorterTests(unittest.TestCase):
 
         self.assertEqual(sorter.parse_metacritic_search_slugs(page, "Syberia", limit=1), ["syberia"])
 
+    def test_parse_metacritic_search_slugs_keeps_deeper_matching_results(self) -> None:
+        titles_and_slugs = [
+            ("Backyard Baseball", "backyard-baseball"),
+            ("Backyard Baseball 97", "backyard-baseball-97"),
+            ("Backyard Baseball 01", "backyard-baseball-01"),
+            ("Backyard Baseball 09", "backyard-baseball-09"),
+            ("Backyard Baseball 10", "backyard-baseball-10"),
+            ("Backyard Baseball iOS", "backyard-baseball-ios"),
+            ("Backyard Baseball (2003)", "backyard-baseball-2003-2003"),
+            ("Backyard Baseball 2006", "backyard-baseball-2006"),
+        ]
+        payload: list[object] = ["game-title"]
+        for title, slug in titles_and_slugs:
+            title_index = len(payload) + 1
+            slug_index = len(payload) + 2
+            payload.append({"type": 0, "title": title_index, "slug": slug_index})
+            payload.append(title)
+            payload.append(slug)
+        page = (
+            '<script type="application/json" data-nuxt-data="nuxt-app" '
+            f'id="__NUXT_DATA__">{json.dumps(payload)}</script>'
+        )
+
+        slugs = sorter.parse_metacritic_search_slugs(page, "Backyard Baseball")
+
+        self.assertIn("backyard-baseball-2003-2003", slugs)
+
     def test_parse_metacritic_page_platforms_reads_visible_platform_label(self) -> None:
         page = (
             '<div class="game-platform-logo__text" data-v-x>DS</div>'
@@ -749,6 +801,7 @@ class RatingSorterTests(unittest.TestCase):
                 user_score_url="https://www.metacritic.com/game/chrono-trigger/user-reviews/",
                 user_rating_count=25,
                 user_score_updated_at=20,
+                product_page_parsed=True,
             )
         ]
         refreshed = [
@@ -768,6 +821,7 @@ class RatingSorterTests(unittest.TestCase):
         self.assertEqual(merged[0].user_score, 9.2)
         self.assertEqual(merged[0].user_rating_count, 25)
         self.assertEqual(merged[0].user_score_updated_at, 20)
+        self.assertTrue(merged[0].product_page_parsed)
 
     def test_save_platform_ratings_uses_system_cache_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -931,6 +985,74 @@ class RatingSorterTests(unittest.TestCase):
         self.assertEqual(rating.metacritic_user, 7.9)
         self.assertEqual(rating.metacritic_user_count, 53)
         self.assertTrue(rating.metacritic_product_page_parsed)
+
+    def test_lookup_rating_marks_unsuccessful_product_page_enrichment_as_parsed(self) -> None:
+        entry = Path("Games Around the World.nds")
+        ratings = [
+            sorter.PlatformRating(
+                title="Games Around the World",
+                slug="games-around-the-world",
+                metacritic=91,
+                metacritic_url="https://www.metacritic.com/game/games-around-the-world/",
+                review_count=10,
+                user_score=8.5,
+                user_score_url="https://www.metacritic.com/game/games-around-the-world/user-reviews/",
+                user_rating_count=12,
+            )
+        ]
+        original = sorter.get_metacritic_slug
+        calls = []
+
+        def fake_get_metacritic_slug(slug: str, kind: str, platform: str | None, timeout: float):
+            calls.append((slug, kind, platform))
+            return (None, None, None, None, None, None, "not found")
+
+        try:
+            sorter.get_metacritic_slug = fake_get_metacritic_slug
+            rating = sorter.lookup_rating(
+                1,
+                1,
+                entry,
+                "game",
+                "nintendo-ds",
+                {"metacritic"},
+                1,
+                ratings,
+                advanced_metacritic_lookup=True,
+            )
+        finally:
+            sorter.get_metacritic_slug = original
+
+        self.assertEqual(calls, [("games-around-the-world", "game", "nintendo-ds")])
+        self.assertEqual(rating.metacritic, 91)
+        self.assertEqual(rating.metacritic_user, 8.5)
+        self.assertEqual(rating.metacritic_user_count, 12)
+        self.assertTrue(rating.metacritic_product_page_parsed)
+        self.assertTrue(sorter.update_platform_ratings_from_rows(ratings, [rating]))
+        self.assertTrue(ratings[0].product_page_parsed)
+        self.assertEqual(ratings[0].user_score, 8.5)
+
+        def unexpected_get_metacritic_slug(slug: str, kind: str, platform: str | None, timeout: float):
+            raise AssertionError("product page should not be fetched after a cached parse attempt")
+
+        try:
+            sorter.get_metacritic_slug = unexpected_get_metacritic_slug
+            second_rating = sorter.lookup_rating(
+                1,
+                1,
+                entry,
+                "game",
+                "nintendo-ds",
+                {"metacritic"},
+                1,
+                ratings,
+                advanced_metacritic_lookup=True,
+            )
+        finally:
+            sorter.get_metacritic_slug = original
+
+        self.assertEqual(second_rating.metacritic, 91)
+        self.assertFalse(sorter.used_uncached_lookup(second_rating))
 
     def test_lookup_rating_does_not_enrich_parsed_platform_match(self) -> None:
         entry = Path("Meteos.nds")
@@ -1182,6 +1304,54 @@ class RatingSorterTests(unittest.TestCase):
             sorter.fetch_text = original
 
         self.assertEqual(result, (None, None, None, None, None, None, "not found"))
+
+    def test_get_metacritic_slug_uses_platform_product_card_when_review_page_defaults_elsewhere(self) -> None:
+        product_page = """
+        <a data-testid="product-score-card" href="/game/the-simpsons-hit-and-run/critic-reviews/?platform=playstation-2">
+          <div class="game-platform-logo__text">PlayStation 2</div>
+          <p>Based on 35 Critic Reviews</p>
+          <div title="Metascore 78 out of 100"><span>78</span></div>
+        </a>
+        <a data-testid="product-score-card" href="/game/the-simpsons-hit-and-run/critic-reviews/?platform=gamecube">
+          <div class="game-platform-logo__text">GameCube</div>
+          <p>Based on 28 Critic Reviews</p>
+          <div title="Metascore 79 out of 100"><span>79</span></div>
+        </a>
+        """
+        wrong_platform_page = """
+        <h1 class="subpage-header__title-text">PlayStation 2 Critic Reviews</h1>
+        <div class="c-siteReviewScore" title="Metascore 78 out of 100"><span>78</span></div>
+        <div class="count">Showing 35 Critic Reviews</div>
+        """
+        original = sorter.fetch_text
+
+        def fake_fetch_text(url: str, timeout: float) -> str:
+            if url == "https://www.metacritic.com/game/the-simpsons-hit-run/":
+                return product_page
+            if url == "https://www.metacritic.com/game/the-simpsons-hit-run/critic-reviews/?platform=gamecube":
+                return wrong_platform_page
+            if url == "https://www.metacritic.com/game/the-simpsons-hit-run/user-reviews/?platform=gamecube":
+                return wrong_platform_page
+            raise AssertionError(f"unexpected URL: {url}")
+
+        try:
+            sorter.fetch_text = fake_fetch_text
+            result = sorter.get_metacritic_slug("the-simpsons-hit-run", "game", "gamecube", 1)
+        finally:
+            sorter.fetch_text = original
+
+        self.assertEqual(
+            result,
+            (
+                79,
+                "https://www.metacritic.com/game/the-simpsons-hit-and-run/critic-reviews/?platform=gamecube",
+                28,
+                None,
+                None,
+                None,
+                "ok",
+            ),
+        )
 
     def test_get_metacritic_slug_ignores_zero_review_scores(self) -> None:
         zero_critic_page = """
@@ -1920,6 +2090,33 @@ class RatingSorterTests(unittest.TestCase):
         self.assertEqual(match.user_rating_count, 5)
         self.assertTrue(match.product_page_parsed)
 
+    def test_update_filename_matches_from_ratings_caches_user_only_match(self) -> None:
+        matches: dict[str, sorter.FilenameMatch] = {}
+        rows = [
+            sorter.Rating(
+                title="Def Jam - Fight for NY",
+                path="C:/roms/Def Jam - Fight for NY.iso",
+                metacritic=None,
+                metacritic_url=None,
+                metacritic_user=10.0,
+                metacritic_user_url="https://www.metacritic.com/game/def-jam-fight-for-ny/user-reviews/?platform=gamecube",
+                metacritic_user_count=1,
+                metacritic_product_page_parsed=True,
+                status="not found",
+            )
+        ]
+
+        changed = sorter.update_filename_matches_from_ratings(matches, rows, [])
+
+        self.assertTrue(changed)
+        match = matches[sorter.filename_match_key("Def Jam - Fight for NY")]
+        self.assertEqual(match.slug, "def-jam-fight-for-ny")
+        self.assertEqual(match.match_type, "lookup")
+        self.assertIsNone(match.metacritic)
+        self.assertEqual(match.user_score, 10.0)
+        self.assertEqual(match.user_rating_count, 1)
+        self.assertTrue(match.product_page_parsed)
+
     def test_update_platform_ratings_from_rows_marks_product_page_parsed(self) -> None:
         platform_ratings = [
             sorter.PlatformRating(
@@ -1971,6 +2168,21 @@ class RatingSorterTests(unittest.TestCase):
             matches[sorter.filename_match_key("Unknown Game")].lookup_version,
             sorter.FILENAME_MATCH_LOOKUP_VERSION,
         )
+
+    def test_update_filename_matches_from_ratings_does_not_cache_metacritic_404_as_miss(self) -> None:
+        matches: dict[str, sorter.FilenameMatch] = {}
+        rows = [
+            sorter.Rating(
+                title="Missing Game",
+                path="C:/roms/Missing Game.nds",
+                status="metacritic 404",
+            )
+        ]
+
+        changed = sorter.update_filename_matches_from_ratings(matches, rows, [])
+
+        self.assertFalse(changed)
+        self.assertNotIn(sorter.filename_match_key("Missing Game"), matches)
 
     def test_save_filename_matches_uses_global_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2123,7 +2335,7 @@ class RatingSorterTests(unittest.TestCase):
             self.assertNotIn("old-miss", loaded)
             self.assertIn("old-hit", loaded)
 
-    def test_load_filename_matches_drops_stale_lookup_matches(self) -> None:
+    def test_load_filename_matches_drops_stale_misses_but_keeps_lookup_matches(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "platform-cache.json"
             payload = {
@@ -2146,6 +2358,14 @@ class RatingSorterTests(unittest.TestCase):
                                 "lookup_version": sorter.FILENAME_MATCH_LOOKUP_VERSION - 1,
                                 "updated_at": 150,
                             },
+                            "stale-miss": {
+                                "title": "Stale Miss",
+                                "slug": None,
+                                "status": "not found",
+                                "match_type": "miss",
+                                "lookup_version": sorter.FILENAME_MATCH_LOOKUP_VERSION - 1,
+                                "updated_at": 150,
+                            },
                             "manual": {
                                 "title": "Manual",
                                 "slug": "manual",
@@ -2164,8 +2384,56 @@ class RatingSorterTests(unittest.TestCase):
 
             loaded = sorter.load_filename_matches(path, "nintendo-ds")
 
-            self.assertNotIn("stale-lookup", loaded)
+            self.assertIn("stale-lookup", loaded)
+            self.assertNotIn("stale-miss", loaded)
             self.assertIn("manual", loaded)
+
+    def test_load_filename_matches_aliases_legacy_format_suffix_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "platform-cache.json"
+            payload = {
+                "version": 1,
+                "updated_at": 200,
+                "platforms": {
+                    "gamecube": {
+                        "platform": "gamecube",
+                        "created_at": 100,
+                        "updated_at": 200,
+                        "items": [],
+                        "filename_matches": {
+                            "resident-evil-zero": {
+                                "title": "Resident Evil Zero",
+                                "slug": None,
+                                "status": "not found",
+                                "match_type": "miss",
+                                "lookup_version": sorter.FILENAME_MATCH_LOOKUP_VERSION,
+                                "updated_at": 150,
+                            },
+                            "resident-evil-zero-nkit": {
+                                "title": "Resident Evil Zero nkit",
+                                "slug": "resident-evil-remake",
+                                "status": "ok",
+                                "match_type": "lookup",
+                                "metacritic": 91,
+                                "metacritic_url": "https://www.metacritic.com/game/resident-evil-remake/",
+                                "review_count": 35,
+                                "user_score": 8.9,
+                                "user_score_url": "https://www.metacritic.com/game/resident-evil-remake/user-reviews/",
+                                "user_rating_count": 123,
+                                "lookup_version": sorter.FILENAME_MATCH_LOOKUP_VERSION - 1,
+                                "updated_at": 140,
+                            },
+                        },
+                    }
+                },
+            }
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            loaded = sorter.load_filename_matches(path, "gamecube")
+
+            self.assertEqual(loaded["resident-evil-zero"].slug, "resident-evil-remake")
+            self.assertEqual(loaded["resident-evil-zero"].user_score, 8.9)
+            self.assertEqual(loaded["resident-evil-zero-nkit"].slug, "resident-evil-remake")
 
 
 if __name__ == "__main__":

@@ -181,6 +181,11 @@ for media folders like `Movies`, `TV Shows`, `Films`, `Series`, `Games`, and
 `ROMs`, plus simple platform folders like `ds`, `ps3`, `psx`, `gba`, and longer
 names like `Nintendo - Nintendo DS (Decrypted)`.
 
+Filename cleaning strips normal scan extensions plus known compound container
+suffixes such as `.nkit.iso`, `.xiso.iso`, and `.nkit.rvz` before matching, so
+those format markers do not become part of the Metacritic search or filename
+cache key.
+
 Metacritic does not provide a simple public API, and OpenCritic's coverage is
 thinner for older console and handheld libraries. This script therefore uses
 Metacritic browse pages for platform-wide game catalogs, then matches ROM
@@ -198,8 +203,9 @@ The script does not hit individual Metacritic game pages unless you pass
 requested platform, then reads both the critic Metascore and the Metacritic user
 score, along with critic review and user-rating counts when Metacritic exposes
 them. `--advanced` also enriches already-matched catalog entries whose product
-page has not been parsed yet. Already-parsed entries and cached filename misses
-are reused without another product-page or search request. The table and TSV
+page has not been checked yet. Product-page attempts that return no extra data
+are cached too, so already-checked entries and cached filename misses are reused
+without another product-page or search request. The table and TSV
 outputs append counts to the `MC` and `MC User` values, such as `58 (24)` or
 `9.0 (5)`. If a game has no critic score but does have a Metacritic user score,
 that user score is normalized to 100 points as the row's fallback `Score` so it
