@@ -1,113 +1,73 @@
-# Score Sort
+# score-sort
 
-Rank game, movie, or TV files and first-level folders by Metacritic scores.
-For games with a platform selected or inferred, Score Sort first uses
-Metacritic's all-time platform catalog, then optionally performs deeper product
-page lookups with `--advanced`.
+Rank your ROMs, movies, or TV shows by their Metacritic score.
 
-Platform catalogs and filename matches are cached system-wide:
+Point it at a folder and it prints a sorted table — highest-rated first.
 
-```powershell
-%LOCALAPPDATA%\score-sort\metacritic_platforms.json
+```
+pip install score-sort
+score-sort "D:\ROMs\Nintendo DS"
 ```
 
-On macOS/Linux:
+Platform and media type are detected automatically from the folder name, so most of the time that's all you need.
+
+## Examples
 
 ```sh
-${XDG_CACHE_HOME:-~/.cache}/score-sort/metacritic_platforms.json
+score-sort "D:\ROMs\Nintendo DS"
+score-sort "D:\ROMs\PlayStation 2"
+score-sort "D:\Media\Movies"
+score-sort "D:\Media\TV Shows"
 ```
 
-## Setup
+Filter to only the good stuff:
 
-```powershell
-uv run score-sort --help
-uv run python -m unittest discover -s tests
+```sh
+score-sort "D:\ROMs\Game Boy Advance" --range ">75"
+score-sort "D:\ROMs\Nintendo DS" --range "1-50"
 ```
 
-## Usage
+Sort alphabetically instead of by score:
 
-Rank a folder:
-
-```powershell
-uv run score-sort "D:\sorted-roms\Nintendo - Nintendo DS (Decrypted)"
+```sh
+score-sort "D:\ROMs\Nintendo Switch" --sort name
 ```
 
-Force a fresh platform catalog lookup:
+Override detection when the folder name isn't enough:
 
-```powershell
-uv run score-sort "D:\sorted-roms\Nintendo - Nintendo DS (Decrypted)" --refresh
+```sh
+score-sort "D:\ROMs\PSX" --platform ps1
+score-sort "D:\Media\Films" --kind movie
 ```
 
-Sort by low score first, by name, or by reverse name:
+## Options
 
-```powershell
-uv run score-sort "D:\Games\Nintendo Switch" --sort score --direction asc
-uv run score-sort "D:\Games\Nintendo Switch" --sort name
-uv run score-sort "D:\Games\Nintendo Switch" --sort name --direction desc
-```
+| Flag | Description |
+|---|---|
+| `--range RANGE` | Filter by score: `>70`, `>=70`, `<50`, `<=50`, `1-50` |
+| `--sort {score,name}` | Sort column (default: `score`) |
+| `--direction {asc,desc}` | Sort direction (default: `desc` for score, `asc` for name) |
+| `--kind {game,movie,tv}` | Override media type detection |
+| `--platform PLATFORM` | Override platform detection (see slugs below) |
+| `--workers N` | Parallel lookup workers (default: 1) |
+| `--advanced` | Enrich results with full Metacritic product-page lookups |
+| `--refresh` | Force a fresh catalog download, ignoring the cache |
 
-Filter to a score range:
+## Supported platforms
 
-```powershell
-uv run score-sort "D:\sorted-roms\Nintendo - Nintendo DS (Decrypted)" --range "1-50"
-uv run score-sort "D:\sorted-roms\Nintendo - Nintendo DS (Decrypted)" --range ">70"
-uv run score-sort "D:\sorted-roms\Nintendo - Nintendo DS (Decrypted)" --range "<=40"
-```
+`3ds` · `dreamcast` · `game-boy-advance` · `gamecube` · `meta-quest` · `mobile` · `nintendo-64` · `nintendo-ds` · `nintendo-switch` · `nintendo-switch-2` · `pc` · `ps-vita` · `ps1` · `ps2` · `ps3` · `ps4` · `ps5` · `psp` · `wii` · `wii-u` · `xbox` · `xbox-360` · `xbox-one` · `xbox-series-x`
 
-Override detection when needed:
+## How it works
 
-```powershell
-uv run score-sort "D:\Media\Movies" --kind movie
-uv run score-sort "D:\Media\TV Shows" --kind tv
-uv run score-sort "D:\Games\PSX" --kind game --platform ps1
-```
+For games with a recognized platform, score-sort downloads the full Metacritic catalog for that platform and matches your filenames against it. Results are cached so repeat runs are instant. With `--advanced`, it also hits individual product pages for any titles that didn't match the catalog.
 
-Use parallel lookup workers and advanced Metacritic product-page enrichment:
+Movies and TV shows skip the catalog step and go straight to product-page lookups.
 
-```powershell
-uv run score-sort "D:\sorted-roms\Nintendo - Nintendo DS (Decrypted)" --workers 6 --advanced
-```
+## Cache
 
-## CLI
+Platform catalogs are cached system-wide and refreshed automatically after 30 days.
 
-The CLI intentionally keeps a small surface:
+**Windows:** `%LOCALAPPDATA%\score-sort\metacritic_platforms.json`  
+**macOS / Linux:** `${XDG_CACHE_HOME:-~/.cache}/score-sort/metacritic_platforms.json`
 
-```text
-folder
---refresh
---sort {score,name}
---direction {asc,desc}
---range RANGE
---kind {game,movie,tv}
---platform PLATFORM
---workers WORKERS
---advanced
-```
-
-First-level child folders are scanned automatically alongside known media file
-extensions, so there is no separate directory-scanning flag.
-
-## Project Structure
-
-```text
-src/score_sort/
-  cli.py        command-line parsing and orchestration
-  core.py       rating models, title matching, Metacritic parsers, cache helpers
-  __main__.py   enables python -m score_sort
-```
-
-## Notes
-
-Context detection walks up from the scanned folder through its parents. It
-recognizes media folders such as `Movies`, `TV Shows`, `Games`, and `ROMs`, plus
-common platform names like `ds`, `ps3`, `psx`, `gba`, and longer folder names
-such as `Nintendo - Nintendo DS (Decrypted)`.
-
-Filename cleaning strips known ROM/media extensions and compound container
-suffixes such as `.nkit.iso`, `.xiso.iso`, and `.nkit.rvz` before matching.
-
-Supported Metacritic platform slugs include `3ds`, `dreamcast`,
-`game-boy-advance`, `gamecube`, `meta-quest`, `mobile`, `nintendo-64`,
-`nintendo-ds`, `nintendo-switch`, `nintendo-switch-2`, `pc`, `ps-vita`, `ps1`,
-`ps2`, `ps3`, `ps4`, `ps5`, `psp`, `wii`, `wii-u`, `xbox`, `xbox-360`,
-`xbox-one`, and `xbox-series-x`.
+Force a refresh with `--refresh`.

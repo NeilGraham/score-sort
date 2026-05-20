@@ -8,7 +8,26 @@ version = "0.1.0"
 description = "Sort media directory items by Metacritic scores."
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "Neil Graham", email = "grahamneiln@gmail.com" }]
+keywords = ["metacritic", "media", "games", "movies", "tv", "sorting", "scores"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Utilities",
+]
 dependencies = ["rich>=13.7"]
+
+[project.urls]
+Homepage = "https://github.com/NeilGraham/score-sort"
+Repository = "https://github.com/NeilGraham/score-sort"
+Issues = "https://github.com/NeilGraham/score-sort/issues"
 
 [project.scripts]
 score-sort = "score_sort.cli:main"
