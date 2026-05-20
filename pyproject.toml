@@ -5,16 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "score-sort"
 version = "0.1.0"
-description = "Sort media directory items by critic scores from Metacritic and OpenCritic."
+description = "Sort media directory items by Metacritic scores."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["rich>=13.7"]
 
 [project.scripts]
-score-sort = "rom_rating_sorter:main"
+score-sort = "score_sort.cli:main"
 
 [tool.setuptools]
-py-modules = ["rom_rating_sorter"]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.uv]
 package = true

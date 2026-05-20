@@ -9,40 +9,109 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-import rom_rating_sorter as sorter
+import score_sort.core as sorter
+from score_sort import cli
 
 
-class RatingSorterTests(unittest.TestCase):
+class ScoreSortTests(unittest.TestCase):
     def test_parse_args_accepts_advanced_lookup(self) -> None:
-        with patch.object(sys, "argv", ["score-sort", "C:/roms", "--advanced"]):
-            args = sorter.parse_args()
+        with patch.object(sys, "argv", ["score-sort", "C:/media", "--advanced"]):
+            args = cli.parse_args()
 
         self.assertTrue(args.advanced)
 
-    def test_parse_args_accepts_debug(self) -> None:
-        with patch.object(sys, "argv", ["score-sort", "C:/roms", "--debug"]):
-            args = sorter.parse_args()
+    def test_parse_args_accepts_name_sort(self) -> None:
+        with patch.object(sys, "argv", ["score-sort", "C:/media", "--sort", "name"]):
+            args = cli.parse_args()
 
-        self.assertTrue(args.debug)
+        self.assertEqual(args.sort, "name")
 
-    def test_parse_args_accepts_match_review_paths(self) -> None:
+    def test_parse_args_accepts_direction(self) -> None:
+        with patch.object(sys, "argv", ["score-sort", "C:/media", "--sort", "score", "--direction", "asc"]):
+            args = cli.parse_args()
+
+        self.assertEqual(args.sort, "score")
+        self.assertEqual(args.direction, "asc")
+
+    def test_default_sort_direction_uses_smart_defaults(self) -> None:
+        self.assertEqual(cli.default_sort_direction("score"), "desc")
+        self.assertEqual(cli.default_sort_direction("name"), "asc")
+
+    def test_parse_args_accepts_preserved_options(self) -> None:
         with patch.object(
             sys,
             "argv",
-            ["score-sort", "C:/roms", "--write-match-review", "review.tsv", "--apply-match-review", "decisions.tsv"],
+            [
+                "score-sort",
+                "C:/media",
+                "--refresh",
+                "--range",
+                ">70",
+                "--kind",
+                "game",
+                "--platform",
+                "ps1",
+                "--workers",
+                "3",
+                "--advanced",
+                "--sort",
+                "score",
+                "--direction",
+                "desc",
+            ],
         ):
-            args = sorter.parse_args()
+            args = cli.parse_args()
 
-        self.assertEqual(args.write_match_review, Path("review.tsv"))
-        self.assertEqual(args.apply_match_review, Path("decisions.tsv"))
+        self.assertTrue(args.refresh)
+        self.assertEqual(args.score_range, ">70")
+        self.assertEqual(args.kind, "game")
+        self.assertEqual(args.platform, "ps1")
+        self.assertEqual(args.workers, 3)
+        self.assertTrue(args.advanced)
+        self.assertEqual(args.sort, "score")
+        self.assertEqual(args.direction, "desc")
 
-    def test_parse_args_rejects_removed_lookup_missing_alias(self) -> None:
+    def test_parse_args_rejects_removed_order(self) -> None:
         with (
-            patch.object(sys, "argv", ["score-sort", "C:/roms", "--lookup-missing"]),
+            patch.object(sys, "argv", ["score-sort", "C:/media", "--order", "worst"]),
             redirect_stderr(io.StringIO()),
             self.assertRaises(SystemExit) as exit_context,
         ):
-            sorter.parse_args()
+            cli.parse_args()
+
+        self.assertNotEqual(exit_context.exception.code, 0)
+
+    def test_parse_args_rejects_removed_debug(self) -> None:
+        with (
+            patch.object(sys, "argv", ["score-sort", "C:/media", "--debug"]),
+            redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit) as exit_context,
+        ):
+            cli.parse_args()
+
+        self.assertNotEqual(exit_context.exception.code, 0)
+
+    def test_parse_args_rejects_removed_match_review_paths(self) -> None:
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["score-sort", "C:/media", "--write-match-review", "review.tsv", "--apply-match-review", "decisions.tsv"],
+            ),
+            redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit) as exit_context,
+        ):
+            cli.parse_args()
+
+        self.assertNotEqual(exit_context.exception.code, 0)
+
+    def test_parse_args_rejects_removed_lookup_missing_alias(self) -> None:
+        with (
+            patch.object(sys, "argv", ["score-sort", "C:/media", "--lookup-missing"]),
+            redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit) as exit_context,
+        ):
+            cli.parse_args()
 
         self.assertNotEqual(exit_context.exception.code, 0)
 
@@ -186,16 +255,49 @@ class RatingSorterTests(unittest.TestCase):
 
         self.assertEqual([row.title for row in sorted_rows], ["scored", "unscored"])
 
-    def test_order_rows_can_return_worst_rated_first(self) -> None:
+    def test_sort_rows_can_return_score_desc(self) -> None:
         rows = [
             sorter.Rating(title="best", path="best", combined=95),
             sorter.Rating(title="mid", path="mid", combined=75),
             sorter.Rating(title="unknown", path="unknown", combined=None),
         ]
 
-        ordered = sorter.order_rows(rows, "worst")
+        ordered = sorter.sort_rows(rows, "score", "desc")
+
+        self.assertEqual([row.title for row in ordered], ["best", "mid", "unknown"])
+
+    def test_sort_rows_can_return_score_asc(self) -> None:
+        rows = [
+            sorter.Rating(title="best", path="best", combined=95),
+            sorter.Rating(title="mid", path="mid", combined=75),
+            sorter.Rating(title="unknown", path="unknown", combined=None),
+        ]
+
+        ordered = sorter.sort_rows(rows, "score", "asc")
 
         self.assertEqual([row.title for row in ordered], ["mid", "best", "unknown"])
+
+    def test_sort_rows_can_return_name_asc(self) -> None:
+        rows = [
+            sorter.Rating(title="Zelda", path="z", combined=95),
+            sorter.Rating(title="metroid", path="m", combined=75),
+            sorter.Rating(title="Advance Wars", path="a", combined=None),
+        ]
+
+        ordered = sorter.sort_rows(rows, "name", "asc")
+
+        self.assertEqual([row.title for row in ordered], ["Advance Wars", "metroid", "Zelda"])
+
+    def test_sort_rows_can_return_name_desc(self) -> None:
+        rows = [
+            sorter.Rating(title="Zelda", path="z", combined=95),
+            sorter.Rating(title="metroid", path="m", combined=75),
+            sorter.Rating(title="Advance Wars", path="a", combined=None),
+        ]
+
+        ordered = sorter.sort_rows(rows, "name", "desc")
+
+        self.assertEqual([row.title for row in ordered], ["Zelda", "metroid", "Advance Wars"])
 
     def test_filter_rows_by_score_range_supports_inclusive_span(self) -> None:
         rows = [

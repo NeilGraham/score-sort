@@ -1,14 +1,8 @@
 #!/usr/bin/env python3
-"""
-Rank games, movies, or TV folders by Metacritic/OpenCritic scores.
-
-The script stores platform catalogs and filename matches in a system-wide cache.
-Destructive operations are dry-run unless --yes is provided.
-"""
+"""Core rating, matching, parsing, and cache helpers for score-sort."""
 
 from __future__ import annotations
 
-import argparse
 import concurrent.futures
 import contextlib
 import csv
@@ -2738,14 +2732,31 @@ def is_failed_cached_entry(rating: Rating) -> bool:
     return rating.status != "ok"
 
 
-def order_rows(rows: list[Rating], order: str) -> list[Rating]:
-    if order == "best":
-        return rows
-    if order == "worst":
-        rated = list(reversed([row for row in rows if row.combined is not None]))
+def sort_rows(rows: list[Rating], sort_key: str, direction: str) -> list[Rating]:
+    if direction not in {"asc", "desc"}:
+        raise ValueError(f"Unknown sort direction: {direction}")
+    reverse_name = direction == "desc"
+    if sort_key == "name":
+        return sorted(
+            rows,
+            key=lambda row: (row.title.lower(), Path(row.path).name.lower()),
+            reverse=reverse_name,
+        )
+    if sort_key == "score":
+        rated = [row for row in rows if row.combined is not None]
         unrated = [row for row in rows if row.combined is None]
-        return rated + unrated
-    raise ValueError(f"Unknown order: {order}")
+        if direction == "desc":
+            rated = sorted(
+                rated,
+                key=lambda row: (-(row.combined or 0), row.title.lower(), Path(row.path).name.lower()),
+            )
+        else:
+            rated = sorted(
+                rated,
+                key=lambda row: (row.combined or 0, row.title.lower(), Path(row.path).name.lower()),
+            )
+        return rated + sorted(unrated, key=lambda row: (row.title.lower(), Path(row.path).name.lower()))
+    raise ValueError(f"Unknown sort key: {sort_key}")
 
 
 def parse_score_range(expression: str) -> tuple[float | None, float | None, bool, bool]:
@@ -2885,225 +2896,3 @@ def move_rows(rows: list[Rating], destination: Path, yes: bool) -> None:
             if target.exists():
                 raise FileExistsError(f"Destination already exists: {target}")
             shutil.move(str(source), str(target))
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Rank games, movies, or TV folders using Metacritic/OpenCritic, with a system-wide JSON cache.",
-    )
-    parser.add_argument("folder", type=Path, help="Folder containing files or child folders to rank.")
-    parser.add_argument(
-        "--action",
-        choices=("rank", "delete-bottom", "move-top"),
-        default="rank",
-        help="What to do after ratings are cached.",
-    )
-    parser.add_argument("--count", type=int, default=20, help="Number of entries for delete-bottom or move-top.")
-    parser.add_argument("--dest", type=Path, help="Destination folder for move-top.")
-    parser.add_argument("--yes", action="store_true", help="Actually delete or move files. Without this, dry-run only.")
-    parser.add_argument("--refresh", action="store_true", help="Ignore cached entries and look them up again.")
-    parser.add_argument("--limit", type=int, help="Limit rows shown for rank output.")
-    parser.add_argument(
-        "--order",
-        choices=("best", "worst"),
-        default="best",
-        help="Sort rank output best-first or worst-first. Use --order worst for pipe-friendly tail cleanup.",
-    )
-    parser.add_argument(
-        "--format",
-        choices=("auto", "table", "paths", "json", "tsv"),
-        default="auto",
-        help="Output format for rank action. Auto prints a table in a terminal and paths when piped.",
-    )
-    parser.add_argument(
-        "--range",
-        dest="score_range",
-        help="Only include scored entries in a range, such as 1-50, >70, >=70, <40, or <=40.",
-    )
-    parser.add_argument("--max-entries", type=int, help="Only scan the first N entries, useful for test runs.")
-    parser.add_argument("--include-dirs", action="store_true", help="Treat first-level child folders as entries too.")
-    parser.add_argument(
-        "--kind",
-        choices=("game", "movie", "tv"),
-        help="Override context detection. Defaults to inferred from this folder or its parents.",
-    )
-    parser.add_argument("--platform", help="Metacritic platform slug, such as nintendo-ds, 3ds, ps2, or xbox-360.")
-    parser.add_argument(
-        "--extensions",
-        default=DEFAULT_EXTENSIONS,
-        help="Comma-separated file extensions to scan.",
-    )
-    parser.add_argument("--delay", type=float, default=1.0, help="Seconds to wait between uncached lookups.")
-    parser.add_argument("--timeout", type=float, default=8.0, help="Seconds before an individual HTTP request times out.")
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=1,
-        help="Number of parallel lookup workers. Defaults to 1; try 4-8 for faster refreshes.",
-    )
-    parser.add_argument(
-        "--sources",
-        choices=("metacritic", "opencritic", "both"),
-        default="metacritic",
-        help="Rating sources to query. Defaults to Metacritic only; OpenCritic is useful mostly for modern games.",
-    )
-    parser.add_argument(
-        "--no-platform-catalog",
-        action="store_true",
-        help="Skip the Metacritic all-time platform catalog and fall back to per-title lookups.",
-    )
-    parser.add_argument(
-        "--advanced",
-        action="store_true",
-        help=(
-            "Use advanced Metacritic product-page lookups: enrich catalog matches with user scores/counts "
-            "and search catalog misses."
-        ),
-    )
-    parser.add_argument(
-        "--catalog-max-pages",
-        type=int,
-        help="Limit Metacritic platform catalog pages fetched, useful for parser smoke tests.",
-    )
-    parser.add_argument(
-        "--platform-cache",
-        type=Path,
-        help="Override the system-wide Metacritic platform cache path.",
-    )
-    parser.add_argument(
-        "--platform-cache-days",
-        type=int,
-        default=DEFAULT_PLATFORM_CACHE_DAYS,
-        help="Refresh a platform catalog after this many days. Use 0 with --refresh for a forced rebuild.",
-    )
-    parser.add_argument(
-        "--write-match-review",
-        type=Path,
-        help="Write borderline Metacritic catalog match candidates to this TSV file.",
-    )
-    parser.add_argument(
-        "--apply-match-review",
-        type=Path,
-        help="Apply accepted/rejected decisions from a match review TSV before ranking.",
-    )
-    parser.add_argument("--verbose", action="store_true", help="Show detailed lookup URLs and action status on stderr.")
-    parser.add_argument("--debug", action="store_true", help="Show per-entry fetch/parse timing diagnostics on stderr.")
-    return parser.parse_args()
-
-
-def main() -> int:
-    global VERBOSE, DEBUG
-    args = parse_args()
-    VERBOSE = args.verbose
-    DEBUG = args.debug
-    if args.workers < 1:
-        warn("--workers must be at least 1.")
-        return 2
-    if args.score_range is not None:
-        try:
-            parse_score_range(args.score_range)
-        except ValueError as exc:
-            warn(str(exc))
-            return 2
-
-    folder = args.folder.expanduser().resolve()
-    if not folder.is_dir():
-        warn(f"Folder does not exist: {folder}")
-        return 2
-
-    extensions = {
-        ext.strip().lower() if ext.strip().startswith(".") else f".{ext.strip().lower()}"
-        for ext in args.extensions.split(",")
-        if ext.strip()
-    }
-    entries = iter_games(folder, extensions, args.include_dirs)
-    if args.max_entries is not None:
-        entries = entries[: args.max_entries]
-    if not entries:
-        warn("No matching entries found.")
-        return 1
-
-    platform = args.platform or platform_from_context(folder)
-    kind = args.kind or kind_from_context(folder, platform)
-    sources = {"metacritic", "opencritic"} if args.sources == "both" else {args.sources}
-    advanced_lookup = args.advanced
-    log(
-        f"Detected context: kind={kind}" + (f", platform={platform}" if platform else "")
-        + f", sources={','.join(sorted(sources))}",
-    )
-    platform_cache_path = args.platform_cache.expanduser().resolve() if args.platform_cache else system_cache_path()
-    platform_ratings = None
-    filename_matches: dict[str, FilenameMatch] = {}
-    if kind == "game" and platform and "metacritic" in sources and not args.no_platform_catalog:
-        log(f"Metacritic platform cache: {platform_cache_path}")
-        platform_ratings = ensure_platform_ratings(
-            platform_cache_path,
-            platform,
-            args.refresh,
-            args.timeout,
-            args.delay,
-            args.workers,
-            args.catalog_max_pages,
-            args.platform_cache_days,
-        )
-        filename_matches = load_filename_matches(platform_cache_path, platform)
-        if args.apply_match_review:
-            if apply_match_review(args.apply_match_review, filename_matches, platform_ratings):
-                save_filename_matches(platform_cache_path, platform, filename_matches)
-                log(f"Applied match review decisions from {args.apply_match_review}.")
-    elif args.apply_match_review:
-        warn("--apply-match-review requires a game platform catalog.")
-        return 2
-    looked_up_rows = refresh_ratings(
-        entries,
-        kind,
-        platform,
-        sources,
-        args.delay,
-        args.timeout,
-        args.workers,
-        platform_ratings,
-        filename_matches,
-        advanced_lookup or platform_ratings is None,
-    )
-    if platform and update_filename_matches_from_ratings(filename_matches, looked_up_rows, platform_ratings):
-        save_filename_matches(platform_cache_path, platform, filename_matches)
-    if platform and update_platform_ratings_from_rows(platform_ratings, looked_up_rows):
-        save_platform_ratings(
-            platform_cache_path,
-            platform,
-            platform_ratings or [],
-            created_at=platform_cache_created_at(platform_cache_path, platform),
-            updated_at=time.time(),
-        )
-    if args.write_match_review:
-        review_candidates = collect_match_review_candidates(looked_up_rows)
-        write_match_review(args.write_match_review, review_candidates)
-        log(f"Wrote {len(review_candidates)} match review candidates to {args.write_match_review}.")
-    rows = sorted_ratings(looked_up_rows, entries)
-    action_rows = filter_rows_by_score_range(rows, args.score_range)
-    ordered_rows = filter_rows_by_score_range(order_rows(rows, args.order), args.score_range)
-
-    if args.action == "delete-bottom":
-        selected = bottom_rows(action_rows, args.count)
-        log(f"Selected bottom {len(selected)} rated entries.")
-        emit_paths(selected)
-        delete_rows(selected, args.yes)
-    elif args.action == "move-top":
-        if not args.dest:
-            warn("--dest is required for move-top.")
-            return 2
-        selected = [row for row in action_rows if row.combined is not None][: args.count]
-        log(f"Selected top {len(selected)} rated entries.")
-        emit_paths(selected)
-        move_rows(selected, args.dest.expanduser().resolve(), args.yes)
-    else:
-        print_rankings(ordered_rows, args.limit, args.format)
-
-    if args.action != "rank" and not args.yes:
-        log("Dry-run only. Add --yes to perform the action.")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
